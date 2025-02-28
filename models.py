@@ -56,6 +56,8 @@ class Servicio(Base):
     servicio_id = Column(Integer, primary_key=True, server_default=text("nextval('servicio_servicio_id_seq'::regclass)"))
     nombre = Column(Enum('Catering', 'Música en vivo', 'Decoración temática', name='tipo_servicio'), nullable=False)
     descripcion = Column(Text)
+
+
     costo_base = Column(Numeric(10, 2), nullable=False)
 
 
