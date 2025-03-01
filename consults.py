@@ -1,6 +1,8 @@
-from models import Evento, Cliente, Empleado, Salon, Servicio, Divisa, TemporadaTarifa, ReservacionServicio, Servicio
-from sqlalchemy import create_engine
+from models import Evento, Cliente, Empleado, Factura, HistorialEvento, AsignacionEmpleadoEvento, Salon, Servicio, Divisa, TemporadaTarifa, ReservacionServicio, Servicio, Reservacion
+from sqlalchemy import create_engine, and_, or_, func, extract, and_
 from sqlalchemy.orm import sessionmaker
+from sqlalchemy.exc import NoResultFound
+from datetime import datetime
 
 
 #Change database connection data
@@ -157,9 +159,212 @@ def update_event(id, description):
     else:
         print("Evento no encontrado")
 
+#getbyid
+def get_event_byid(evento_id):
+    try:
+        evento = session.query(Evento).get(evento_id)
+        print(evento.evento_id, evento.nombre, evento.descripcion, evento.categoria, evento.fecha_programada, evento.cliente_id)
+    except NoResultFound:
+        return None
+
+def get_currency_byid(divisa_id):
+    try:
+        divisa = session.query(Divisa).get(divisa_id)
+        print(divisa.divisa_id, divisa.codigo, divisa.nombre)
+    except NoResultFound:
+        return None
+    
+def get_hall_byid(salon_id):
+    try:
+        salon = session.query(Salon).get(salon_id)
+        print(salon.salon_id, salon.nombre, salon.ubicacion, salon.capacidad)
+    except NoResultFound:
+        return None
+
+def get_service_byid(servicio_id):
+    try:
+        servicio = session.query(Servicio).get(servicio_id)
+        print(servicio.servicio_id, servicio.nombre, servicio.descripcion)
+    except NoResultFound:
+        return None
+    
+def get_employee_byid(empleado_id):
+    try:
+        empleado = session.query(Empleado).get(empleado_id)
+        print(empleado.empleado_id, empleado.nombre, empleado.contacto, empleado.jerarquia, empleado.rol)
+    except NoResultFound:
+        return None
+    
+#Desglozar eventos por mes y año 
+def informe_ingresos_por_mes(mes, año):
+    ingresos = session.query(
+        Evento.categoria,
+        func.sum(Factura.total).label('ingresos_totales')
+    ).join(Reservacion, Evento.evento_id == Reservacion.evento_id)\
+     .join(Factura, Reservacion.reservacion_id == Factura.reservacion_id)\
+     .filter(
+         and_(
+             extract('month', Reservacion.fecha_evento) == mes,
+             extract('year', Reservacion.fecha_evento) == año
+         )
+     ).group_by(Evento.categoria).all()
+
+    for categoria, ingresos_totales in ingresos:
+        print(f"Categoría: {categoria}, Ingresos Totales: {ingresos_totales}")
+#Listar eventos por fecha        
+def listar_eventos_por_fecha(fecha):
+    try:
+        if not isinstance(fecha, str):
+            raise ValueError("La fecha debe ser una cadena en formato 'YYYY-MM-DD'.")
+
+        fecha_deseada = datetime.strptime(fecha, '%Y-%m-%d').date()
+
+        eventos = session.query(
+            Evento.nombre.label('nombre_evento'),
+            Evento.categoria.label('tipo_evento'),
+            Salon.ubicacion.label('ubicacion_evento'),
+            Cliente.nombre.label('nombre_cliente'),
+            Cliente.email.label('email_cliente')
+        ).join(
+            Cliente, Evento.cliente_id == Cliente.cliente_id
+        ).join(
+            Reservacion, Evento.evento_id == Reservacion.evento_id
+        ).join(
+            Salon, Reservacion.salon_id == Salon.salon_id
+        ).filter(
+            func.date(Reservacion.fecha_evento) == fecha_deseada
+        ).all()
+
+        if eventos:
+            print(f"Eventos programados para el {fecha}:")
+            for evento in eventos:
+                print(f"Nombre: {evento.nombre_evento}, Tipo: {evento.tipo_evento}, "
+                      f"Ubicación: {evento.ubicacion_evento}, Cliente: {evento.nombre_cliente}, "
+                      f"Email: {evento.email_cliente}")
+        else:
+            print(f"No hay eventos programados para el {fecha}.")
+    except ValueError as ve:
+        print(f"Error en el formato de la fecha: {ve}")
+    except Exception as e:
+        print(f"Error al listar eventos: {e}")
+
+#Mostrar servicios con catering en fecha especifica 
+def listar_eventos_con_catering(mes, año):
+    
+    with Session() as session:
+        eventos_catering = session.query(
+            Evento.nombre,
+            Evento.categoria,
+            Reservacion.fecha_evento,
+            ReservacionServicio.cantidad.label("num_asistentes"),
+            Salon.ubicacion
+        ).join(Reservacion, Evento.evento_id == Reservacion.evento_id) \
+         .join(ReservacionServicio, Reservacion.reservacion_id == ReservacionServicio.reservacion_id) \
+         .join(Servicio, ReservacionServicio.servicio_id == Servicio.servicio_id) \
+         .join(Salon, Reservacion.salon_id == Salon.salon_id) \
+         .filter(
+             Servicio.nombre == 'Catering',
+             extract('month', Reservacion.fecha_evento) == mes,
+             extract('year', Reservacion.fecha_evento) == año
+         ).all()
+
+        for evento in eventos_catering:
+            print(f"Evento: {evento.nombre}, Tipo: {evento.categoria}, "
+                  f"Fecha: {evento.fecha_evento}, "
+                  f"Asistentes: {evento.num_asistentes}, Ubicación: {evento.ubicacion}")
+            
+#Costo total de una reservacion 
+def calcular_costo_total_reservacion(reservacion_id):
+   
+    with Session() as session:
+        total_base = session.query(func.coalesce(Reservacion.tarifa_aplicada, 0)) \
+                            .filter(Reservacion.reservacion_id == reservacion_id) \
+                            .scalar()
+
+        total_servicios = session.query(func.coalesce(func.sum(ReservacionServicio.costo_aplicado), 0)) \
+                                 .filter(ReservacionServicio.reservacion_id == reservacion_id) \
+                                 .scalar()
+
+        costo_total = total_base + total_servicios
+        print(f"Reservación {reservacion_id}: Costo Total = ${costo_total:.2f}")
+        
+#Obtener historial del evento 
+
+def obtener_historial_evento(evento_id):
+  
+    try:
+        
+        historial = session.query(
+            HistorialEvento.evento_historial_id,
+            HistorialEvento.nombre_modificado,
+            HistorialEvento.descripcion_modificada,
+            HistorialEvento.fecha_modificacion,
+            HistorialEvento.modificado_por
+        ).filter(
+            HistorialEvento.evento_id == evento_id
+        ).order_by(
+            HistorialEvento.fecha_modificacion.desc()
+        ).all()
+
+        # Imprimir resultados
+        if historial:
+            print(f"Historial de modificaciones para el evento ID {evento_id}:")
+            for registro in historial:
+                print(f"Fecha: {registro.fecha_modificacion}, Modificado por: {registro.modificado_por}")
+                print(f"Nombre modificado: {registro.nombre_modificado}")
+                print(f"Descripción modificada: {registro.descripcion_modificada}")
+                print("-" * 40) 
+        else:
+            print(f"No se encontró historial de modificaciones para el evento ID {evento_id}.")
+    except Exception as e:
+        print(f"Error al obtener el historial del evento: {e}")
+        
+#Encontrar empleados disponibles 
+def encontrar_empleados_disponibles(rol, fecha_inicio, fecha_fin):
+    try:
+        fecha_inicio = datetime.strptime(fecha_inicio, '%Y-%m-%d %H:%M:%S')
+        fecha_fin = datetime.strptime(fecha_fin, '%Y-%m-%d %H:%M:%S')
+
+        empleados_con_rol = session.query(Empleado).filter(
+            Empleado.rol == rol
+        ).all()
+        empleados_disponibles = []
+
+        for empleado in empleados_con_rol:
+            asignaciones_conflicto = session.query(AsignacionEmpleadoEvento).filter(
+                AsignacionEmpleadoEvento.empleado_id == empleado.empleado_id,
+                or_(
+                    and_(
+                        AsignacionEmpleadoEvento.hora_inicio <= fecha_inicio,
+                        AsignacionEmpleadoEvento.hora_fin >= fecha_inicio
+                    ),
+                    and_(
+                        AsignacionEmpleadoEvento.hora_inicio <= fecha_fin,
+                        AsignacionEmpleadoEvento.hora_fin >= fecha_fin
+                    ),
+                    and_(
+                        AsignacionEmpleadoEvento.hora_inicio >= fecha_inicio,
+                        AsignacionEmpleadoEvento.hora_fin <= fecha_fin
+                    )
+                )
+            ).all()
+
+            if not asignaciones_conflicto:
+                empleados_disponibles.append(empleado)
+        if empleados_disponibles:
+            print(f"Empleados disponibles para el rol '{rol}' entre {fecha_inicio} y {fecha_fin}:")
+            for empleado in empleados_disponibles:
+                print(f"ID: {empleado.empleado_id}, Nombre: {empleado.nombre}, Contacto: {empleado.contacto}")
+        else:
+            print(f"No hay empleados disponibles para el rol '{rol}' entre {fecha_inicio} y {fecha_fin}.")
+    except Exception as e:
+        print(f"Error al encontrar empleados disponibles: {e}")
+            
+
+
 #call preferred function
 def main():
-    update_employee()
+    get_employee_byid(1)
 
 if __name__ == "__main__":
     main()
